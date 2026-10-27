@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>异地21点</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  :root { --bg:#0f1420; --card:#1b2436; --red:#e5484d; --gold:#e7b25a; --txt:#eef2f8; --dim:#8a93a5; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--txt); min-height:100vh; }
+  .wrap { max-width:520px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { text-align:center; font-size:22px; letter-spacing:2px; margin:8px 0 4px; }
+  .sub { text-align:center; color:var(--dim); font-size:13px; margin-bottom:24px; }
+  button { display:block; width:100%; padding:15px; font-size:17px; border:none; border-radius:12px;
+           background:var(--gold); color:#1a1206; font-weight:700; cursor:pointer; margin:12px 0; }
+  button:disabled { opacity:.35; cursor:default; }
+  button.secondary { background:#2a3550; color:var(--txt); }
+  input { display:block; width:100%; padding:15px; font-size:18px; text-align:center; letter-spacing:4px;
+          text-transform:uppercase; border:1px solid #33405c; border-radius:12px; background:#141c2e; color:var(--txt);
+          margin:12px 0; }
+  .codebox { text-align:center; font-size:15px; color:var(--dim); margin-top:8px; }
+  .codebox b { display:block; font-size:34px; letter-spacing:8px; color:var(--gold); margin:8px 0; }
+  .hidden { display:none !important; }
+  .hand { background:var(--card); border-radius:14px; padding:14px; margin:12px 0; }
+  .hand .who { font-size:13px; color:var(--dim); margin-bottom:6px; display:flex; justify-content:space-between; }
+  .hand .who .v { color:var(--gold); font-weight:700; }
+  .cards { display:flex; gap:6px; flex-wrap:wrap; min-height:58px; align-items:center; }
+  .card { width:44px; height:60px; border-radius:8px; background:#f7f3ea; color:#1a1206;
+          display:flex; flex-direction:column; align-items:center; justify-content:center;
+          font-weight:800; font-size:15px; line-height:1; box-shadow:0 2px 4px rgba(0,0,0,.4); }
+  .card .s { font-size:13px; }
+  .card.red { color:var(--red); }
+  .card.back { background:#2a3550; color:var(--dim); }
+  .btnrow { display:flex; gap:12px; }
+  .btnrow button { flex:1; }
+  #banner { text-align:center; font-size:20px; font-weight:800; padding:16px; margin-top:8px; border-radius:12px; }
+  #banner.win { background:#16321f; color:#6ee787; }
+  #banner.lose { background:#3a1517; color:#ff8a8a; }
+  #banner.push { background:#2a2436; color:#c9b8ff; }
+  .msg { text-align:center; color:var(--dim); font-size:13px; margin-top:10px; }
+  .status { color:var(--gold); font-weight:700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>异地21点</h1>
+  <div class="sub">两人异地一起玩 · 标准规则</div>
+
+  <div id="lobby">
+    <button id="btnCreate">创建房间</button>
+    <input id="code" maxlength="6" placeholder="输入 6 位房间码" autocomplete="off">
+    <button id="btnJoin" class="secondary">加入房间</button>
+    <div id="lobbyMsg" class="msg"></div>
+    <div id="codebox" class="codebox hidden">
+      你的房间码（发给她）
+      <b id="codeShow"></b>
+      等她输入后自动开局
+    </div>
+  </div>
+
+  <div id="game" class="hidden">
+    <div class="hand" id="dealer"></div>
+    <div class="hand" id="opponent"></div>
+    <div class="hand" id="you"></div>
+    <div id="controls" class="btnrow"></div>
+    <div id="banner" class="hidden"></div>
+    <div id="gameMsg" class="msg"></div>
+  </div>
+</div>
+
+<script id="logic">
+// ===== 纯逻辑（无 DOM，Node 自检用） =====
+const BJ = (() => {
+  const RANKS = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+  const SUITS = ['♠','♥','♦','♣'];
+  const rankOf = c => c % 13;
+  const suitOf = c => Math.floor(c / 13);
+  const rankName = c => RANKS[rankOf(c)];
+  const suitName = c => SUITS[suitOf(c)];
+  const isRed = c => { const s = suitOf(c); return s === 1 || s === 2; };
+  const value = r => r === 0 ? 11 : (r >= 10 ? 10 : r + 1);
+  function best(hand){
+    let total = 0, aces = 0;
+    for (const c of hand){
+      const r = rankOf(c);
+      if (r === 0){ aces++; total += 11; } else total += value(r);
+    }
+    while (total > 21 && aces > 0){ total -= 10; aces--; }
+    return total;
+  }
+  const isBlackjack = hand => hand.length === 2 && best(hand) === 21;
+  const isBust = hand => best(hand) > 21;
+  function newDeck(){
+    const d = [];
+    for (let i = 0; i < 52; i++) d.push(i);
+    for (let i = d.length - 1; i > 0; i--){
+      const j = Math.floor(Math.random() * (i + 1));
+      [d[i], d[j]] = [d[j], d[i]];
+    }
+    return d;
+  }
+  // 返回 'win' | 'lose' | 'push'
+  function result(player, dealer){
+    if (isBust(player)) return 'lose';
+    const pb = isBlackjack(player), db = isBlackjack(dealer);
+    if (pb && !db) return 'win';
+    if (!pb && db) return 'lose';
+    if (isBust(dealer)) return 'win';
+    const p = best(player), d = best(dealer);
+    if (p > d) return 'win';
+    if (p < d) return 'lose';
+    return 'push';
+  }
+  return { RANKS, SUITS, rankOf, suitOf, rankName, suitName, isRed, best, isBlackjack, isBust, newDeck, result };
+})();
+</script>
+
+<script>
+// ===== 应用（DOM + PeerJS） =====
+const $ = id => document.getElementById(id);
+
+let peer = null, conn = null, me = 0;
+let state = null;   // 庄家(房主)持有的完整状态；闲家只持 view
+let code = '';
+
+function genCode(){
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+
+function freshState(){
+  const s = { deck: BJ.newDeck(), hands: [[],[]], dealer: [], stood: [false,false], over: false };
+  deal(s);
+  return s;
+}
+function deal(s){
+  s.deck = BJ.newDeck();
+  s.hands = [[s.deck.pop(), s.deck.pop()], [s.deck.pop(), s.deck.pop()]];
+  s.dealer = [s.deck.pop(), s.deck.pop()];
+  s.stood = [false, false];
+  s.over = false;
+}
+
+function viewFor(mine){
+  return {
+    me: mine,
+    hands: state.hands,
+    dealer: state.over ? state.dealer : [state.dealer[0], -1],
+    stood: state.stood,
+    over: state.over,
+    values: [BJ.best(state.hands[0]), BJ.best(state.hands[1])],
+    dealerValue: state.over ? BJ.best(state.dealer) : BJ.best([state.dealer[0]]),
+    results: state.over ? [BJ.result(state.hands[0], state.dealer), BJ.result(state.hands[1], state.dealer)] : null,
+  };
+}
+
+function broadcast(){ if (conn) conn.send({ t:'state', s: viewFor(1) }); }
+
+// 房主权威：i=0 自己, i=1 对方
+function act(i, a){
+  if (!state || state.over) return;
+  const h = state.hands[i];
+  if (a === 'hit'){
+    if (state.stood[i] || BJ.isBust(h) || BJ.best(h) >= 21) return;
+    h.push(state.deck.pop());
+    if (BJ.best(h) >= 21) state.stood[i] = true;
+  } else {
+    state.stood[i] = true;
+  }
+  if (state.stood[0] && state.stood[1]){ state.over = true; while (BJ.best(state.dealer) < 17) state.dealer.push(state.deck.pop()); }
+  broadcast();
+  render(viewFor(0));
+}
+
+// ---- 渲染 ----
+function cardHTML(c){
+  if (c === -1) return '<div class="card back">?</div>';
+  const red = BJ.isRed(c) ? ' red' : '';
+  return '<div class="card' + red + '"><span>' + BJ.rankName(c) + '</span><span class="s">' + BJ.suitName(c) + '</span></div>';
+}
+function handStatus(v, i){
+  if (v.over){
+    const r = v.results[i];
+    return r === 'win' ? '赢' : r === 'lose' ? '输' : '平';
+  }
+  if (BJ.isBust(v.hands[i])) return '爆牌';
+  if (v.hands.length && BJ.isBlackjack(v.hands[i])) return 'Blackjack!';
+  return v.values[i] + ' 点';
+}
+function handHTML(title, v, i, isYou){
+  const cls = isYou ? '你' : '对方';
+  const s = handStatus(v, i);
+  const cards = v.hands[i].map(cardHTML).join('');
+  return '<div class="who"><span>' + cls + '</span><span class="v status">' + s + '</span></div><div class="cards">' + cards + '</div>';
+}
+function render(v){
+  $('dealer').innerHTML = '<div class="who"><span>庄家</span><span class="v">' + v.dealerValue + '</span></div><div class="cards">' + v.dealer.map(cardHTML).join('') + '</div>';
+  const op = 1 - v.me;
+  $('opponent').innerHTML = handHTML('', v, op, false);
+  $('you').innerHTML = handHTML('', v, v.me, true);
+
+  const ctl = $('controls');
+  if (v.over){
+    ctl.innerHTML = v.me === 0
+      ? '<button id="btnNext">下一局</button>'
+      : '<div class="msg">等待对方开始下一局…</div>';
+    const b = $('btnNext'); if (b) b.onclick = () => { deal(state); broadcast(); render(viewFor(0)); };
+  } else {
+    const mine = v.me;
+    const canHit = !v.stood[mine] && !BJ.isBust(v.hands[mine]) && BJ.best(v.hands[mine]) < 21;
+    ctl.innerHTML = '<button id="btnHit" ' + (canHit ? '' : 'disabled') + '>要牌</button><button id="btnStand" ' + (v.stood[mine] ? 'disabled' : '') + '>停牌</button>';
+    $('btnHit').onclick = () => sendAction('hit');
+    $('btnStand').onclick = () => sendAction('stand');
+  }
+
+  const bn = $('banner');
+  if (v.over){
+    const r = v.results[v.me];
+    bn.className = r; bn.classList.remove('hidden');
+    bn.textContent = r === 'win' ? '这局你赢了 🎉' : r === 'lose' ? '这局你输了 😢' : '平局';
+  } else bn.classList.add('hidden');
+
+  $('gameMsg').textContent = v.over && v.me !== 0 ? '' : '';
+}
+
+function sendAction(a){
+  if (me === 0){ act(0, a); }               // 房主直接执行
+  else if (conn){ conn.send({ t:'act', a }); } // 闲家发给房主
+}
+
+function showError(e){
+  const m = (e && e.type) ? ({ 'unavailable-id':'房间码已被占用，换个重试', 'peer-unavailable':'没找到这个房间码，检查一下', 'network':'网络连接失败', 'server-error':'连接服务器失败，稍后再试' }[e.type] || ('出错了：' + e.type)) : '出错了';
+  $('lobbyMsg').textContent = m;
+  $('lobby').classList.remove('hidden'); $('game').classList.add('hidden');
+}
+
+// ---- 房主 ----
+$('btnCreate').onclick = () => {
+  code = genCode();
+  $('lobbyMsg').textContent = '正在创建…';
+  peer = new Peer('bj21-' + code);
+  peer.on('open', () => {
+    $('codebox').classList.remove('hidden');
+    $('codeShow').textContent = code;
+    $('lobbyMsg').textContent = '';
+  });
+  peer.on('connection', c => {
+    conn = c;
+    conn.on('data', d => {
+      if (d.t === 'join'){ me = 0; state = freshState(); startGame(); broadcast(); }
+      else if (d.t === 'act'){ act(1, d.a); }
+    });
+    conn.on('close', () => $('gameMsg').textContent = '对方掉线了，刷新重开一局');
+  });
+  peer.on('error', showError);
+};
+
+// ---- 闲家 ----
+$('btnJoin').onclick = () => {
+  code = $('code').value.trim().toUpperCase();
+  if (code.length !== 6){ $('lobbyMsg').textContent = '房间码是 6 位'; return; }
+  $('lobbyMsg').textContent = '正在加入…';
+  peer = new Peer();
+  peer.on('open', () => {
+    conn = peer.connect('bj21-' + code, { reliable:true });
+    conn.on('open', () => conn.send({ t:'join' }));
+    conn.on('data', d => { if (d.t === 'state'){ me = 1; render(d.s); } });
+    conn.on('close', () => $('gameMsg').textContent = '连接断开，刷新重新加入');
+  });
+  peer.on('error', showError);
+};
+
+function startGame(){
+  $('lobby').classList.add('hidden');
+  $('game').classList.remove('hidden');
+  render(viewFor(0));
+}
+</script>
+</body>
+</html>
